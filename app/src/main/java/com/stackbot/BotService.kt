@@ -49,18 +49,24 @@ class BotService : Service() {
     private var leadMs = 60f
     private var maxTaps = 55
     private val hist = ArrayDeque<Sample>()
-    // Target x per (axis class, direction): index = cls*2 + dir
-    private val tx = FloatArray(4)
-    private val base = FloatArray(4)
-    private val locked = BooleanArray(4)
-    private val misses = IntArray(4)
-    private var lastSlot = -1
+    private var intervalMs = 1400f
+    @Volatile private var cadence = false
+    @Volatile private var delta = 1400f          // fixed tap-to-tap interval (ms)
+    @Volatile private var lastTap = 0L
+    @Volatile private var awaiting = 0L
+    @Volatile private var lastMotion = 0L
+    @Volatile private var snapT = 0L
+    @Volatile private var snapX = 0f
+    @Volatile private var snapV = 0f
+    private var cxEff = 0f                        // x where the moving block is aligned
+    private var tapXT = 0f; private var tapV = 0f
+    private var tapThread: HandlerThread? = null
+    private lateinit var tapHandler: Handler
     private var idleFrames = 0
     private var perfectPrev = false
     private var lastPerfect = 0L
-    private var lastTap = 0L
-    private var awaiting = 0L
-    private var taps = 0; private var perfects = 0
+    @Volatile private var taps = 0
+    private var perfects = 0
     private var lastNotify = 0L
 
     override fun onBind(i: Intent?): IBinder? = null
@@ -69,6 +75,8 @@ class BotService : Service() {
         if (intent == null || intent.action == "STOP") { stopSelf(); return START_NOT_STICKY }
         leadMs = intent.getFloatExtra("lead", 60f)
         maxTaps = intent.getIntExtra("max", 55)
+        intervalMs = intent.getFloatExtra("interval", 1400f)
+        delta = intervalMs
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("bot", "StackBot", NotificationManager.IMPORTANCE_LOW))
         startFg(notif("Ready - tap the floating button in the game"))
@@ -84,7 +92,9 @@ class BotService : Service() {
         sw = dm.widthPixels; sh = dm.heightPixels
         w = sw / SCALE; h = sh / SCALE
         hx = IntArray(w); hy = IntArray(h)
-        for (i in 0..3) { tx[i] = w / 2f; base[i] = w / 2f }
+        cxEff = w / 2f
+        tapThread = HandlerThread("tap").also { it.start() }
+        tapHandler = Handler(tapThread!!.looper)
 
         thread = HandlerThread("bot").also { it.start() }
         handler = Handler(thread!!.looper)
@@ -139,9 +149,11 @@ class BotService : Service() {
         armed = on
         btn?.text = if (on) "STOP" else "GO"
         (btn?.background as? GradientDrawable)?.setColor(Color.parseColor(if (on) "#2E7D32" else "#7E57C2"))
+        tapHandler.removeCallbacksAndMessages(null)
+        cadence = false; awaiting = 0L; lastTap = 0L
         handler.post {
-            hist.clear(); lastTap = 0L; awaiting = 0L
-            if (on) { taps = 0; perfects = 0 }
+            hist.clear()
+            if (on) { taps = 0; perfects = 0; delta = intervalMs; cxEff = w / 2f }
         }
     }
 
@@ -198,26 +210,37 @@ class BotService : Service() {
         return 0f
     }
 
-    // ---------- feedback: find / hold the aligned position ----------
-    private fun applySearch(s: Int) {
-        val k = misses[s]
-        val off = ((k + 1) / 2) * STEP * (if (k % 2 == 1) 1f else -1f)
-        tx[s] = base[s] + off
+    // ---------- fixed-rhythm tapping ----------
+    private fun scheduleNext() {
+        tapHandler.removeCallbacksAndMessages(null)
+        if (!armed || !cadence) return
+        val at = maxOf(lastTap + delta.toLong(), SystemClock.uptimeMillis() + 20)
+        tapHandler.postAtTime({ cadenceTap() }, at)
     }
 
-    private fun onMiss() {
-        val s = lastSlot; if (s < 0) return
-        if (locked[s]) { locked[s] = false; base[s] = tx[s]; misses[s] = 0 }
-        misses[s]++
-        applySearch(s)
-        Log.i(TAG, "miss slot=$s -> tx=${tx[s]}")
+    private fun cadenceTap() {
+        if (!armed || !cadence) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastMotion > 400) {            // no block moving right now: wait briefly
+            if (now - lastTap > 4000) { ui.post { setArmed(false) }; return }
+            tapHandler.postAtTime({ cadenceTap() }, now + 60)
+            return
+        }
+        doTap(now)
     }
 
-    private fun onPerfect() {
-        val s = lastSlot; if (s < 0) return
-        locked[s] = true; misses[s] = 0; base[s] = tx[s]
-        for (i in 0..3) if (!locked[i]) { tx[i] = tx[s]; base[i] = tx[s]; misses[i] = 0 }
-        Log.i(TAG, "PERFECT slot=$s locked tx=${tx[s]}")
+    private fun doTap(now: Long) {
+        val svc = TapService.instance
+        if (svc == null) { ui.post { setArmed(false) }; return }
+        svc.tap(sw * 0.5f, sh * 0.62f)
+        lastTap = now
+        tapXT = snapX + snapV * (now - snapT).toFloat()
+        tapV = snapV
+        awaiting = now
+        taps++
+        Log.i(TAG, "tap #$taps at x=$tapXT v=$tapV delta=$delta")
+        if (taps >= maxTaps) { ui.post { setArmed(false) } }
+        else { cadence = true; scheduleNext() }
     }
 
     private fun analyze(cur: IntArray) {
@@ -252,8 +275,19 @@ class BotService : Service() {
         if (perfectEdge) lastPerfect = now
 
         if (awaiting != 0L) {
-            if (perfectEdge && now - awaiting < 900) { awaiting = 0L; perfects++; onPerfect() }
-            else if (now - awaiting > 800) { awaiting = 0L; onMiss() }
+            if (perfectEdge && now - awaiting < 900) {
+                awaiting = 0L; perfects++
+                cxEff = 0.5f * cxEff + 0.5f * tapXT          // learn where "aligned" is
+                Log.i(TAG, "PERFECT cx=$cxEff delta=$delta")
+            } else if (now - awaiting > 800) {
+                awaiting = 0L
+                if (abs(tapV) > 0.02f) {                      // early/late in ms -> trim the interval
+                    val eps = ((cxEff - tapXT) / tapV).coerceIn(-400f, 400f)
+                    delta = (delta + 0.6f * eps).coerceIn(300f, 4000f)
+                    Log.i(TAG, "miss eps=$eps -> delta=$delta")
+                    scheduleNext()
+                }
+            }
         }
 
         // 3) track position and velocity of the moving block
@@ -268,25 +302,17 @@ class BotService : Service() {
                 val a = hist.first(); val b = hist.last(); val dt = (b.t - a.t).toFloat()
                 if (dt >= 40f) { vx = (b.x - a.x) / dt; vy = (b.y - a.y) / dt }
             }
+            lastMotion = now
+            if (vx != 0f) { snapT = now; snapX = sample.x; snapV = vx }
         } else {
             idleFrames++
             if (idleFrames >= 3) hist.clear()
         }
 
-        // 4) fire when the block will reach the aligned x within the lead time
-        if (armed && sample != null && abs(vx) > 0.02f && now - lastTap > 700 && taps < maxTaps) {
-            val cls = if (vx * vy > 0) 0 else 1
-            val s = cls * 2 + (if (vx > 0) 1 else 0)
-            val dx = tx[s] - sample.x
-            if (dx * vx > 0f && dx / vx <= leadMs) {
-                val svc = TapService.instance
-                if (svc == null) { stopSelf(); return }
-                svc.tap(sw * 0.5f, sh * 0.62f)
-                lastTap = now; awaiting = now; lastSlot = s; taps++
-                hist.clear()
-                Log.i(TAG, "tap #$taps slot=$s dx=$dx vx=$vx")
-                if (taps >= maxTaps) ui.post { setArmed(false) }
-            }
+        // 4) first tap only: fire when the block is about to cross the middle; after that the fixed rhythm takes over
+        if (armed && !cadence && sample != null && abs(vx) > 0.02f && now - lastTap > 700) {
+            val dx = cxEff - sample.x
+            if (dx * vx > 0f && dx / vx <= leadMs) { hist.clear(); doTap(now) }
         }
         status(if (armed) "RUNNING  taps $taps  perfect $perfects" else "Ready - tap the floating button in the game")
     }
@@ -297,6 +323,7 @@ class BotService : Service() {
         try { reader?.close() } catch (_: Exception) {}
         try { projection?.stop() } catch (_: Exception) {}
         thread?.quitSafely()
+        tapThread?.quitSafely()
         super.onDestroy()
     }
 }

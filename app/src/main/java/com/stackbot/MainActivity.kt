@@ -12,6 +12,7 @@ import android.widget.*
 
 class MainActivity : Activity() {
     private lateinit var lead: EditText
+    private lateinit var interval: EditText
     private lateinit var maxTaps: EditText
     private lateinit var status: TextView
 
@@ -36,6 +37,9 @@ class MainActivity : Activity() {
         root.addView(TextView(this).apply { text = "Tap lead (ms) - raise if taps land late, lower if early" })
         lead = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; setText("60") }
         root.addView(lead)
+        root.addView(TextView(this).apply { text = "Tap-to-tap interval (ms) - fixed rhythm after the first tap" })
+        interval = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; setText("1400") }
+        root.addView(interval)
         root.addView(TextView(this).apply { text = "Stop after N auto taps" })
         maxTaps = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; setText("55") }
         root.addView(maxTaps)
@@ -44,7 +48,7 @@ class MainActivity : Activity() {
             setOnClickListener { start() }
         })
         root.addView(TextView(this).apply {
-            text = "Open the game and start a round (first block moving). Then tap the floating GO button: the bot reads the block's movement and speed and taps when it lines up with the stack. Tap again to pause. Drag the button to move it. Stop the service from its notification."
+            text = "Open the game and start a round (first block moving). Then tap the floating GO button: the bot makes the first tap when the block crosses the middle, then repeats taps at a fixed interval (self-correcting after misses). Tap again to pause. Drag the button to move it. Stop the service from its notification."
         })
         setContentView(ScrollView(this).apply { addView(root) })
     }
@@ -71,6 +75,7 @@ class MainActivity : Activity() {
             val i = Intent(this, BotService::class.java)
                 .putExtra("code", res).putExtra("data", data)
                 .putExtra("lead", lead.text.toString().toFloatOrNull() ?: 60f)
+                .putExtra("interval", interval.text.toString().toFloatOrNull() ?: 1400f)
                 .putExtra("max", maxTaps.text.toString().toIntOrNull() ?: 55)
             startForegroundService(i)
             moveTaskToBack(true)

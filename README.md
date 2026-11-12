@@ -1,5 +1,5 @@
-# StackBot
-1. Push this folder to a GitHub repo (branch main). Actions builds the APK: Actions tab > latest run > Artifacts > StackBot-debug.
-2. Install the APK, enable the StackBot accessibility service, tap Start, allow screen capture, switch to the game.
-3. Play ~8 blocks yourself with perfect timing (notification shows learning progress). The bot then takes over.
-4. If taps land early/late, change "Tap lead (ms)". Logcat tag: StackBot.
+# StackBot v2
+1. Push to GitHub (branch main). Actions builds the APK: Actions > latest run > Artifacts > StackBot-debug.
+2. Install, enable accessibility + "display over other apps", tap "Show floating button", allow screen capture.
+3. Open the game, start a round, tap the floating GO button. Tap again to pause. Drag to move it.
+4. Tap lead (ms): raise if taps land late, lower if early. Logcat tag: StackBot.

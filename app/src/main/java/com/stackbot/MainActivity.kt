@@ -3,6 +3,7 @@ package com.stackbot
 import android.app.Activity
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -26,6 +27,12 @@ class MainActivity : Activity() {
             text = "1. Enable accessibility (StackBot)"
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         })
+        root.addView(Button(this).apply {
+            text = "2. Allow display over other apps"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            }
+        })
         root.addView(TextView(this).apply { text = "Tap lead (ms) - raise if taps land late, lower if early" })
         lead = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; setText("60") }
         root.addView(lead)
@@ -33,24 +40,24 @@ class MainActivity : Activity() {
         maxTaps = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; setText("55") }
         root.addView(maxTaps)
         root.addView(Button(this).apply {
-            text = "2. Start bot, then switch to the game"
+            text = "3. Show floating button"
             setOnClickListener { start() }
         })
         root.addView(TextView(this).apply {
-            text = "Play ~8 blocks yourself with perfect timing. The bot learns the target from your PERFECT taps, then takes over. Stop it from the notification."
+            text = "Open the game and start a round (first block moving). Then tap the floating GO button: the bot reads the block's movement and speed and taps when it lines up with the stack. Tap again to pause. Drag the button to move it. Stop the service from its notification."
         })
         setContentView(ScrollView(this).apply { addView(root) })
     }
 
     override fun onResume() {
         super.onResume()
-        status.text = if (TapService.instance != null) "Accessibility: ON" else "Accessibility: OFF"
+        status.text = "Accessibility: " + (if (TapService.instance != null) "ON" else "OFF") +
+            "   |   Overlay: " + (if (Settings.canDrawOverlays(this)) "ON" else "OFF")
     }
 
     private fun start() {
-        if (TapService.instance == null) {
-            Toast.makeText(this, "Enable the accessibility service first", Toast.LENGTH_LONG).show()
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        if (TapService.instance == null || !Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Enable steps 1 and 2 first", Toast.LENGTH_LONG).show()
             return
         }
         val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
